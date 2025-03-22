@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RAG-Enabled Chat Application</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="{{ url_for('static', path='/css/styles.css') }}">
+</head>
+<body>
+    <div class="container-fluid">
+        <div class="row">
+            <!-- Sidebar -->
+            <div class="col-md-3 sidebar">
+                <div class="sidebar-header">
+                    <h3>RAG Chat</h3>
+                </div>
+                
+                <!-- Chat Mode Selection -->
+                <div class="chat-mode-selection">
+                    <h5>Chat Mode</h5>
+                    <div class="form-check">
+                        <input class="form-check-input" type="radio" name="chatMode" id="directMode" value="direct" checked>
+                        <label class="form-check-label" for="directMode">
+                            Direct AI Chat
+                        </label>
+                    </div>
+                    <div class="form-check">
+                        <input class="form-check-input" type="radio" name="chatMode" id="pdfMode" value="pdf">
+                        <label class="form-check-label" for="pdfMode">
+                            User PDF Chat
+                        </label>
+                    </div>
+                    <div class="form-check">
+                        <input class="form-check-input" type="radio" name="chatMode" id="preloadedMode" value="preloaded">
+                        <label class="form-check-label" for="preloadedMode">
+                            Pre-loaded PDF Chat
+                        </label>
+                    </div>
+                </div>
+                
+                <!-- Model Selection -->
+                <div class="model-selection mt-4">
+                    <h5>Model Selection</h5>
+                    <select class="form-select" id="modelSelect">
+                        <option value="" disabled selected>Loading models...</option>
+                    </select>
+                </div>
+                
+                <!-- PDF Upload Section (initially hidden) -->
+                <div class="pdf-upload mt-4" id="pdfUploadSection" style="display: none;">
+                    <h5>Upload PDF</h5>
+                    <div class="mb-3">
+                        <input class="form-control" type="file" id="pdfFileInput" accept=".pdf">
+                    </div>
+                    <button class="btn btn-primary" id="uploadPdfBtn">Upload</button>
+                    
+                    <!-- Progress Bar (initially hidden) -->
+                    <div class="progress mt-2" id="uploadProgressContainer" style="display: none;">
+                        <div id="uploadProgressBar" class="progress-bar" role="progressbar" style="width: 0%;" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100">0%</div>
+                    </div>
+                    <div id="uploadStatus" class="mt-2"></div>
+                </div>
+                
+                <!-- Preloaded PDFs Section (initially hidden) -->
+                <div class="preloaded-pdfs mt-4" id="preloadedPdfsSection" style="display: none;">
+                    <h5>Preloaded PDFs</h5>
+                    <div id="preloadedPdfsList">Loading...</div>
+                    <button class="btn btn-primary mt-2" id="loadPreloadedBtn">Load & Index</button>
+                    
+                    <!-- Progress Bar (initially hidden) -->
+                    <div class="progress mt-2" id="preloadedProgressContainer" style="display: none;">
+                        <div id="preloadedProgressBar" class="progress-bar" role="progressbar" style="width: 0%;" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100">0%</div>
+                    </div>
+                    <div id="preloadedStatus" class="mt-2"></div>
+                </div>
+            </div>
+            
+            <!-- Main Chat Area -->
+            <div class="col-md-9 main-content">
+                <div class="chat-container">
+                    <div class="chat-messages" id="chatMessages">
+                        <div class="system-message">
+                            <p>Welcome to RAG-Enabled Chat Application! Select a chat mode and start a conversation.</p>
+                        </div>
+                    </div>
+                    
+                    <div class="chat-input-container">
+                        <div class="input-group">
+                            <input type="text" id="messageInput" class="form-control" placeholder="Type your message...">
+                            <button class="btn btn-primary" id="sendMessageBtn">Send</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="{{ url_for('static', path='/js/app.js') }}"></script>
+</body>
+</html>
