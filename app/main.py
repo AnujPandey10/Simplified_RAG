@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Request, UploadFile, File, Form, HTTPException, BackgroundTasks
+from fastapi import FastAPI, Request, UploadFile, File, Form, HTTPException, BackgroundTasks, Depends, Query
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -7,7 +7,7 @@ import os
 import shutil
 import uuid
 import time
-from typing import List, Optional, AsyncIterator
+from typing import List, Optional, AsyncIterator, Dict, Any
 import json
 import asyncio
 
@@ -44,6 +44,9 @@ os.makedirs(VECTOR_STORE_DIR, exist_ok=True)
 # Store processing status
 processing_tasks = {}
 
+# Store chat histories
+chat_histories = {}
+
 
 @app.get("/", response_class=HTMLResponse)
 async def read_root(request: Request):
@@ -60,23 +63,101 @@ async def get_models():
 
 
 @app.post("/api/chat-direct")
-async def chat_direct(model: str = Form(...), message: str = Form(...)):
+async def chat_direct(model: str = Form(...), message: str = Form(...), session_id: str = Form(None)):
     try:
-        response = await chat_with_ollama(model, message)
-        return {"response": response}
+        # Create a new session ID if not provided
+        if not session_id:
+            session_id = str(uuid.uuid4())
+            chat_histories[session_id] = []
+        elif session_id not in chat_histories:
+            chat_histories[session_id] = []
+        
+        # Get the chat history
+        history = chat_histories[session_id]
+        
+        # Get response from the model
+        response = await chat_with_ollama(model, message, history)
+        
+        # Update chat history
+        history.append({"role": "user", "content": message})
+        history.append({"role": "assistant", "content": response})
+        
+        return {"response": response, "session_id": session_id}
+    except Exception as e:
+        return HTTPException(status_code=500, detail=f"Chat failed: {str(e)}")
+
+
+@app.post("/api/chat-direct")
+async def chat_direct(
+    model: str = Form(...),
+    message: str = Form(...),
+    session_id: str = Form(None)
+):
+    try:
+        # Create a new session ID if not provided
+        if not session_id:
+            session_id = str(uuid.uuid4())
+            chat_histories[session_id] = []
+        elif session_id not in chat_histories:
+            chat_histories[session_id] = []
+        
+        # Get the chat history
+        history = chat_histories[session_id]
+        
+        # Add user message to history
+        history.append({"role": "user", "content": message})
+        
+        # Get response from Ollama
+        response = await chat_with_ollama(model, message, history)
+        
+        # Add response to history
+        history.append({"role": "assistant", "content": response})
+        
+        # Return the response
+        return {"response": response, "session_id": session_id}
     except Exception as e:
         return HTTPException(status_code=500, detail=f"Chat failed: {str(e)}")
 
 
 @app.post("/api/stream-chat-direct")
-async def stream_chat_direct(model: str = Form(...), message: str = Form(...)):
+async def stream_chat_direct(
+    model: str = Form(...),
+    message: str = Form(...),
+    session_id: str = Form(None)
+):
     try:
+        # Create a new session ID if not provided
+        if not session_id:
+            session_id = str(uuid.uuid4())
+            chat_histories[session_id] = []
+        elif session_id not in chat_histories:
+            chat_histories[session_id] = []
+        
+        # Get the chat history
+        history = chat_histories[session_id]
+        
+        # Add user message to history
+        history.append({"role": "user", "content": message})
+        
         # Get streaming response generator
-        response_generator = await stream_chat_with_ollama(model, message)
+        response_generator = await stream_chat_with_ollama(model, message, history)
+        
+        # Create a streaming response
+        async def response_stream():
+            full_response = ""
+            async for chunk in response_generator:
+                full_response += chunk
+                # Send the chunk with proper SSE format
+                yield f"data: {json.dumps({'chunk': chunk, 'session_id': session_id})}\n\n"
+            
+            # After streaming is complete, add the full response to history
+            history.append({"role": "assistant", "content": full_response})
+            # Send an end marker to signal the complete message
+            yield f"data: {json.dumps({'complete': True, 'full_response': full_response, 'session_id': session_id})}\n\n"
         
         # Return a streaming response
         return StreamingResponse(
-            content=response_generator,
+            content=response_stream(),
             media_type="text/event-stream"
         )
     except Exception as e:
@@ -161,6 +242,7 @@ async def chat_with_uploaded_pdf(
     task_id: str = Form(...),
     message: str = Form(...),
     model: str = Form(...),
+    session_id: str = Form(None)
 ):
     try:
         if task_id not in processing_tasks:
@@ -169,10 +251,24 @@ async def chat_with_uploaded_pdf(
         if processing_tasks[task_id]["status"] != "completed":
             raise HTTPException(status_code=400, detail="PDF is still processing")
         
-        vector_store_path = processing_tasks[task_id]["vector_store_path"]
-        response = await chat_with_pdf(vector_store_path, message, model)
+        # Create a new session ID if not provided
+        if not session_id:
+            session_id = str(uuid.uuid4())
+            chat_histories[session_id] = []
+        elif session_id not in chat_histories:
+            chat_histories[session_id] = []
         
-        return {"response": response}
+        # Get the chat history
+        history = chat_histories[session_id]
+        
+        vector_store_path = processing_tasks[task_id]["vector_store_path"]
+        response = await chat_with_pdf(vector_store_path, message, model, history)
+        
+        # Update chat history
+        history.append({"role": "user", "content": message})
+        history.append({"role": "assistant", "content": response})
+        
+        return {"response": response, "session_id": session_id}
     
     except Exception as e:
         return HTTPException(status_code=500, detail=f"Chat failed: {str(e)}")
@@ -183,6 +279,7 @@ async def stream_chat_with_uploaded_pdf(
     task_id: str = Form(...),
     message: str = Form(...),
     model: str = Form(...),
+    session_id: str = Form(None)
 ):
     try:
         if task_id not in processing_tasks:
@@ -191,12 +288,38 @@ async def stream_chat_with_uploaded_pdf(
         if processing_tasks[task_id]["status"] != "completed":
             raise HTTPException(status_code=400, detail="PDF is still processing")
         
+        # Create a new session ID if not provided
+        if not session_id:
+            session_id = str(uuid.uuid4())
+            chat_histories[session_id] = []
+        elif session_id not in chat_histories:
+            chat_histories[session_id] = []
+        
+        # Get the chat history
+        history = chat_histories[session_id]
+        
+        # Add user message to history
+        history.append({"role": "user", "content": message})
+        
         vector_store_path = processing_tasks[task_id]["vector_store_path"]
-        response_generator = await stream_chat_with_pdf(vector_store_path, message, model)
+        response_generator = await stream_chat_with_pdf(vector_store_path, message, model, history)
+        
+        # Create a streaming response
+        async def response_stream():
+            full_response = ""
+            async for chunk in response_generator:
+                full_response += chunk
+                # Send the chunk with proper SSE format
+                yield f"data: {json.dumps({'chunk': chunk, 'session_id': session_id})}\n\n"
+            
+            # After streaming is complete, add the full response to history
+            history.append({"role": "assistant", "content": full_response})
+            # Send an end marker to signal the complete message
+            yield f"data: {json.dumps({'complete': True, 'full_response': full_response, 'session_id': session_id})}\n\n"
         
         # Return a streaming response
         return StreamingResponse(
-            content=response_generator,
+            content=response_stream(),
             media_type="text/event-stream"
         )
     
@@ -264,16 +387,31 @@ async def load_preloaded_pdfs_background(task_id: str, preloaded_dir: str, vecto
 async def chat_with_preloaded(
     message: str = Form(...),
     model: str = Form(...),
+    session_id: str = Form(None)
 ):
     try:
         vector_store_path = os.path.join(VECTOR_STORE_DIR, "preloaded_store")
         
         if not os.path.exists(vector_store_path):
             raise HTTPException(status_code=400, detail="Preloaded PDFs not indexed yet")
-            
-        response = await chat_with_pdf(vector_store_path, message, model)
         
-        return {"response": response}
+        # Create a new session ID if not provided
+        if not session_id:
+            session_id = str(uuid.uuid4())
+            chat_histories[session_id] = []
+        elif session_id not in chat_histories:
+            chat_histories[session_id] = []
+        
+        # Get the chat history
+        history = chat_histories[session_id]
+            
+        response = await chat_with_pdf(vector_store_path, message, model, history)
+        
+        # Update chat history
+        history.append({"role": "user", "content": message})
+        history.append({"role": "assistant", "content": response})
+        
+        return {"response": response, "session_id": session_id}
     
     except Exception as e:
         return HTTPException(status_code=500, detail=f"Chat failed: {str(e)}")
@@ -283,6 +421,7 @@ async def chat_with_preloaded(
 async def stream_chat_with_preloaded(
     message: str = Form(...),
     model: str = Form(...),
+    session_id: str = Form(None)
 ):
     try:
         vector_store_path = os.path.join(VECTOR_STORE_DIR, "preloaded_store")
@@ -290,11 +429,37 @@ async def stream_chat_with_preloaded(
         if not os.path.exists(vector_store_path):
             raise HTTPException(status_code=400, detail="Preloaded PDFs not indexed yet")
         
-        response_generator = await stream_chat_with_pdf(vector_store_path, message, model)
+        # Create a new session ID if not provided
+        if not session_id:
+            session_id = str(uuid.uuid4())
+            chat_histories[session_id] = []
+        elif session_id not in chat_histories:
+            chat_histories[session_id] = []
+        
+        # Get the chat history
+        history = chat_histories[session_id]
+        
+        # Add user message to history
+        history.append({"role": "user", "content": message})
+        
+        response_generator = await stream_chat_with_pdf(vector_store_path, message, model, history)
+        
+        # Create a streaming response
+        async def response_stream():
+            full_response = ""
+            async for chunk in response_generator:
+                full_response += chunk
+                # Send the chunk with proper SSE format
+                yield f"data: {json.dumps({'chunk': chunk, 'session_id': session_id})}\n\n"
+            
+            # After streaming is complete, add the full response to history
+            history.append({"role": "assistant", "content": full_response})
+            # Send an end marker to signal the complete message
+            yield f"data: {json.dumps({'complete': True, 'full_response': full_response, 'session_id': session_id})}\n\n"
         
         # Return a streaming response
         return StreamingResponse(
-            content=response_generator,
+            content=response_stream(),
             media_type="text/event-stream"
         )
     

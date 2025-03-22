@@ -41,16 +41,23 @@ async def get_ollama_models() -> List[str]:
         return []
 
 
-async def chat_with_ollama(model_name: str, message: str) -> str:
+async def chat_with_ollama(model_name: str, message: str, history: List[Dict[str, str]] = None) -> str:
     """Chat directly with an Ollama model."""
     try:
         # Run in a thread pool to avoid blocking
         loop = asyncio.get_event_loop()
+        
+        # Create messages list with history if provided
+        messages = []
+        if history:
+            messages.extend(history)
+        messages.append({'role': 'user', 'content': message})
+        
         response = await loop.run_in_executor(
             None, 
             lambda: ollama.chat(
                 model=model_name,
-                messages=[{'role': 'user', 'content': message}]
+                messages=messages
             )
         )
         
@@ -61,7 +68,7 @@ async def chat_with_ollama(model_name: str, message: str) -> str:
         raise
 
 
-async def stream_chat_with_ollama(model_name: str, message: str):
+async def stream_chat_with_ollama(model_name: str, message: str, history: List[Dict[str, str]] = None):
     """Stream chat response from an Ollama model."""
     try:
         # Create a generator that yields response chunks
@@ -69,20 +76,35 @@ async def stream_chat_with_ollama(model_name: str, message: str):
             # Run in a thread pool to avoid blocking
             loop = asyncio.get_event_loop()
             
+            # Create a prompt with history if provided
+            prompt = message
+            if history:
+                # Format history into a conversation format
+                conversation = "You are an AI assistant for Wockhardt. Be helpful, accurate, and professional.\n\n"
+                for msg in history:
+                    role_prefix = "User: " if msg['role'] == 'user' else "Assistant: "
+                    conversation += f"{role_prefix}{msg['content']}\n"
+                conversation += f"User: {message}\nAssistant: "
+                prompt = conversation
+            
             def generate_chunks():
-                return list(chunk['response'] 
-                          for chunk in ollama.generate(
-                              model=model_name,
-                              prompt=message,
-                              stream=True
-                          ) if chunk.get('response'))
+                chunks = []
+                for chunk in ollama.generate(
+                    model=model_name,
+                    prompt=prompt,
+                    stream=True
+                ):
+                    if chunk.get('response'):
+                        chunks.append(chunk['response'])
+                return chunks
             
             # Get all chunks at once through the executor
             chunks = await loop.run_in_executor(None, generate_chunks)
             
-            # Yield each chunk
+            # Yield each chunk with a small delay to ensure streaming is visible
             for chunk in chunks:
                 yield chunk
+                await asyncio.sleep(0.01)  # Small delay to ensure chunks are streamed visibly
         
         return response_generator()
     except Exception as e:
@@ -158,6 +180,7 @@ async def chat_with_pdf(
     vector_store_path: str,
     query: str,
     model_name: str,
+    history: List[Dict[str, str]] = None,
     k: int = 4
 ) -> str:
     """Chat with a PDF using RAG."""
@@ -182,12 +205,19 @@ async def chat_with_pdf(
         # Extract the content from the documents
         context = "\n\n".join([doc.page_content for doc in docs])
         
-        # Create a prompt with the context
-        prompt = f"""Answer the following question based on the provided context. If the answer is not in the context, say "I don't have enough information to answer this question."
+        # Create a prompt with the context and history if provided
+        conversation_history = ""
+        if history:
+            conversation_history = "\n\nPrevious conversation:\n"
+            for msg in history:
+                role_prefix = "Human: " if msg['role'] == 'user' else "Assistant: "
+                conversation_history += f"{role_prefix}{msg['content']}\n"
+        
+        prompt = f"""You are an AI assistant for Wockhardt. Answer the following question based on the provided context and conversation history. If the answer is not in the context, use your general knowledge but make it clear that the information is not from the provided documents.
 
 Context:
 {context}
-
+{conversation_history}
 Question:
 {query}
 
@@ -213,6 +243,7 @@ async def stream_chat_with_pdf(
     vector_store_path: str,
     query: str,
     model_name: str,
+    history: List[Dict[str, str]] = None,
     k: int = 4
 ):
     """Stream chat with a PDF using RAG."""
@@ -237,12 +268,19 @@ async def stream_chat_with_pdf(
         # Extract the content from the documents
         context = "\n\n".join([doc.page_content for doc in docs])
         
-        # Create a prompt with the context
-        prompt = f"""Answer the following question based on the provided context. If the answer is not in the context, say "I don't have enough information to answer this question."
+        # Create a prompt with the context and history if provided
+        conversation_history = ""
+        if history:
+            conversation_history = "\n\nPrevious conversation:\n"
+            for msg in history:
+                role_prefix = "Human: " if msg['role'] == 'user' else "Assistant: "
+                conversation_history += f"{role_prefix}{msg['content']}\n"
+        
+        prompt = f"""You are an AI assistant for Wockhardt. Answer the following question based on the provided context and conversation history. If the answer is not in the context, use your general knowledge but make it clear that the information is not from the provided documents.
 
 Context:
 {context}
-
+{conversation_history}
 Question:
 {query}
 
@@ -262,9 +300,10 @@ Answer:"""
             # Get all chunks at once through the executor
             chunks = await loop.run_in_executor(None, generate_chunks)
             
-            # Yield each chunk
+            # Yield each chunk with a small delay to ensure streaming is visible
             for chunk in chunks:
                 yield chunk
+                await asyncio.sleep(0.01)  # Small delay to ensure chunks are streamed visibly
         
         return response_generator()
     

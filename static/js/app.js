@@ -22,6 +22,7 @@ document.addEventListener('DOMContentLoaded', function() {
     let currentChatMode = 'direct';
     let currentTaskId = null;
     let processingStatusInterval = null;
+    let sessionId = null; // Add session ID for chat history
 
     // Initialize the application
     init();
@@ -294,57 +295,46 @@ document.addEventListener('DOMContentLoaded', function() {
         // Clear input
         messageInput.value = '';
         
-        // Add loading indicator
-        const loadingId = addLoadingMessage();
-        
         try {
+            // Add a loading message
+            const loadingId = addLoadingMessage();
+            
             let endpoint;
             let body;
             
             if (currentChatMode === 'direct') {
-                // Direct AI chat
                 endpoint = '/api/stream-chat-direct';
                 body = new URLSearchParams({
                     model: selectedModel,
-                    message: message
+                    message: message,
+                    session_id: sessionId
                 });
             } else if (currentChatMode === 'pdf' && currentTaskId) {
-                // User PDF chat
                 endpoint = '/api/stream-chat-pdf';
                 body = new URLSearchParams({
                     task_id: currentTaskId,
                     message: message,
-                    model: selectedModel
+                    model: selectedModel,
+                    session_id: sessionId
                 });
             } else if (currentChatMode === 'preloaded') {
-                // Preloaded PDF chat
                 endpoint = '/api/stream-chat-preloaded';
                 body = new URLSearchParams({
                     message: message,
-                    model: selectedModel
+                    model: selectedModel,
+                    session_id: sessionId
                 });
             } else {
-                // Invalid state
-                removeLoadingMessage(loadingId);
                 if (currentChatMode === 'pdf' && !currentTaskId) {
                     addSystemMessage('Please upload a PDF first.');
                 } else {
                     addSystemMessage('Please select a valid chat mode.');
                 }
+                removeLoadingMessage(loadingId);
                 return;
             }
             
-            // Create a new message container for the bot's response
-            const messageContainer = document.createElement('div');
-            messageContainer.className = 'message bot-message';
-            const messageContent = document.createElement('p');
-            messageContainer.appendChild(messageContent);
-            chatMessages.appendChild(messageContainer);
-            
-            // Remove loading indicator
-            removeLoadingMessage(loadingId);
-            
-            // Start streaming response
+            // Use non-streaming fetch to avoid SSE display issues
             const response = await fetch(endpoint, {
                 method: 'POST',
                 headers: {
@@ -357,31 +347,83 @@ document.addEventListener('DOMContentLoaded', function() {
                 throw new Error(`HTTP error! status: ${response.status}`);
             }
             
-            // Create a text decoder to handle the stream
-            const reader = response.body.getReader();
-            const decoder = new TextDecoder();
+            // Remove the loading message
+            removeLoadingMessage(loadingId);
             
-            // Read the stream
-            while (true) {
-                const {value, done} = await reader.read();
-                if (done) break;
-                
-                // Decode and append the chunk
-                const chunk = decoder.decode(value, {stream: true});
-                messageContent.textContent += chunk;
-                
-                // Scroll to bottom
-                chatMessages.scrollTop = chatMessages.scrollHeight;
+            // Extract the final response from the streaming data
+            const text = await extractFinalResponseFromStream(response);
+            
+            // Add the bot's response to the chat
+            if (text) {
+                addBotMessage(text);
+            } else {
+                addSystemMessage('No response received from the model.');
             }
             
         } catch (error) {
             console.error('Error sending message:', error);
-            
-            // Remove loading indicator
-            removeLoadingMessage(loadingId);
-            
-            // Add error message
             addSystemMessage('Failed to get a response. Please try again.');
+        }
+    }
+    
+    // New function to extract the final response from a streaming response
+    async function extractFinalResponseFromStream(response) {
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        let finalResponse = '';
+        
+        try {
+            while (true) {
+                const {value, done} = await reader.read();
+                if (done) break;
+                
+                buffer += decoder.decode(value, {stream: true});
+            }
+            
+            // Process the complete buffer to extract the final response
+            const events = buffer.split('\n\n');
+            
+            // Look for the complete event with full_response
+            for (const event of events) {
+                if (event.startsWith('data: ')) {
+                    try {
+                        const jsonData = JSON.parse(event.slice(6));
+                        if (jsonData.complete && jsonData.full_response) {
+                            finalResponse = jsonData.full_response;
+                            break;
+                        }
+                    } catch (e) {
+                        console.error('Error parsing event:', e);
+                    }
+                }
+            }
+            
+            // If we didn't find a complete event, try to reconstruct from chunks
+            if (!finalResponse) {
+                let reconstructed = '';
+                for (const event of events) {
+                    if (event.startsWith('data: ')) {
+                        try {
+                            const jsonData = JSON.parse(event.slice(6));
+                            if (jsonData.chunk) {
+                                reconstructed += jsonData.chunk;
+                            }
+                        } catch (e) {
+                            // Ignore parsing errors
+                        }
+                    }
+                }
+                
+                if (reconstructed) {
+                    finalResponse = reconstructed;
+                }
+            }
+            
+            return finalResponse;
+        } catch (error) {
+            console.error('Error extracting final response:', error);
+            return '';
         }
     }
 
@@ -403,16 +445,41 @@ document.addEventListener('DOMContentLoaded', function() {
     }
 
     function addBotMessage(message) {
-        const messageDiv = document.createElement('div');
-        messageDiv.className = 'message bot-message';
-        messageDiv.textContent = message;
-        
+        // Create container for the message
         const containerDiv = document.createElement('div');
         containerDiv.style.clear = 'both';
         containerDiv.style.overflow = 'hidden';
         containerDiv.style.marginBottom = '15px';
-        containerDiv.appendChild(messageDiv);
         
+        // Create the message element
+        const messageDiv = document.createElement('div');
+        messageDiv.className = 'message bot-message';
+        
+        // Clean the message text - remove any data: prefixes or JSON formatting
+        let cleanMessage = message;
+        
+        // Check if the message contains raw SSE data
+        if (message.includes('data: {"chunk":')) {
+            // Extract the full_response from the complete event if available
+            const completeMatch = message.match(/data: \{"complete":true,"full_response":"([^"]+)"/);
+            if (completeMatch && completeMatch[1]) {
+                cleanMessage = completeMatch[1].replace(/\\n/g, '\n').replace(/\\\//g, '/').replace(/\\"/g, '"');
+            } else {
+                // If no complete event, try to reconstruct from chunks
+                cleanMessage = '';
+                const chunkRegex = /data: \{"chunk":"([^"]+)"[^\}]+\}/g;
+                let match;
+                while ((match = chunkRegex.exec(message)) !== null) {
+                    cleanMessage += match[1].replace(/\\n/g, '\n').replace(/\\\//g, '/').replace(/\\"/g, '"');
+                }
+            }
+        }
+        
+        // Set the clean message text
+        messageDiv.textContent = cleanMessage;
+        
+        // Add to the container and chat
+        containerDiv.appendChild(messageDiv);
         chatMessages.appendChild(containerDiv);
         
         // Scroll to bottom
