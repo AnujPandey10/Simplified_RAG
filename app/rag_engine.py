@@ -3,13 +3,12 @@ import asyncio
 from typing import List, Dict, Any, Callable, Optional, Union
 import ollama
 import numpy as np
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.metrics.pairwise import cosine_similarity
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.document_loaders import PyPDFLoader
+from langchain_community.vectorstores import Chroma
+from langchain_community.embeddings import HuggingFaceEmbeddings
 from tqdm import tqdm
 import glob
-import pickle
 import shutil
 
 
@@ -91,58 +90,10 @@ async def stream_chat_with_ollama(model_name: str, message: str):
         raise
 
 
-class SimpleVectorStore:
-    """A simple vector store using TF-IDF and cosine similarity."""
-    
-    def __init__(self):
-        self.vectorizer = TfidfVectorizer()
-        self.vectors = None
-        self.documents = []
-    
-    def add_documents(self, documents):
-        """Add documents to the vector store."""
-        # Extract text from documents
-        texts = [doc.page_content for doc in documents]
-        self.documents.extend(documents)
-        
-        # Vectorize the texts
-        self.vectors = self.vectorizer.fit_transform(texts)
-    
-    def similarity_search(self, query, k=4):
-        """Search for similar documents."""
-        # Vectorize the query
-        query_vector = self.vectorizer.transform([query])
-        
-        # Calculate similarity
-        similarities = cosine_similarity(query_vector, self.vectors).flatten()
-        
-        # Get the top k most similar documents
-        indices = similarities.argsort()[-k:][::-1]
-        
-        return [self.documents[i] for i in indices]
-    
-    def save(self, path):
-        """Save the vector store to disk."""
-        os.makedirs(path, exist_ok=True)
-        with open(os.path.join(path, 'vectorstore.pkl'), 'wb') as f:
-            pickle.dump({
-                'vectorizer': self.vectorizer,
-                'vectors': self.vectors,
-                'documents': self.documents
-            }, f)
-    
-    @classmethod
-    def load(cls, path):
-        """Load a vector store from disk."""
-        with open(os.path.join(path, 'vectorstore.pkl'), 'rb') as f:
-            data = pickle.load(f)
-        
-        store = cls()
-        store.vectorizer = data['vectorizer']
-        store.vectors = data['vectors']
-        store.documents = data['documents']
-        
-        return store
+# Initialize the embedding model once
+def get_embeddings():
+    """Get the embedding model."""
+    return HuggingFaceEmbeddings(model_name="BAAI/bge-small-en")
 
 async def process_pdf(
     pdf_path: str, 
@@ -176,24 +127,22 @@ async def process_pdf(
         if progress_callback:
             progress_callback(30)
         
-        # Create the vector store
-        vector_store = SimpleVectorStore()
+        # Get the embedding model
+        embeddings = get_embeddings()
         
         # Update progress
         if progress_callback:
             progress_callback(50)
         
-        # Add documents to the vector store
+        # Create and persist the vector store
         loop = asyncio.get_event_loop()
         await loop.run_in_executor(
             None,
-            lambda: vector_store.add_documents(chunks)
-        )
-        
-        # Save the vector store
-        await loop.run_in_executor(
-            None,
-            lambda: vector_store.save(vector_store_path)
+            lambda: Chroma.from_documents(
+                documents=chunks,
+                embedding=embeddings,
+                persist_directory=vector_store_path
+            )
         )
         
         # Update progress
@@ -215,13 +164,20 @@ async def chat_with_pdf(
     try:
         # Load the vector store
         loop = asyncio.get_event_loop()
+        embeddings = get_embeddings()
         vector_store = await loop.run_in_executor(
             None,
-            lambda: SimpleVectorStore.load(vector_store_path)
+            lambda: Chroma(
+                persist_directory=vector_store_path,
+                embedding_function=embeddings
+            )
         )
         
         # Search for relevant documents
-        docs = vector_store.similarity_search(query, k=k)
+        docs = await loop.run_in_executor(
+            None,
+            lambda: vector_store.similarity_search(query, k=k)
+        )
         
         # Extract the content from the documents
         context = "\n\n".join([doc.page_content for doc in docs])
@@ -263,13 +219,20 @@ async def stream_chat_with_pdf(
     try:
         # Load the vector store
         loop = asyncio.get_event_loop()
+        embeddings = get_embeddings()
         vector_store = await loop.run_in_executor(
             None,
-            lambda: SimpleVectorStore.load(vector_store_path)
+            lambda: Chroma(
+                persist_directory=vector_store_path,
+                embedding_function=embeddings
+            )
         )
         
         # Search for relevant documents
-        docs = vector_store.similarity_search(query, k=k)
+        docs = await loop.run_in_executor(
+            None,
+            lambda: vector_store.similarity_search(query, k=k)
+        )
         
         # Extract the content from the documents
         context = "\n\n".join([doc.page_content for doc in docs])
@@ -366,24 +329,22 @@ async def load_preloaded_pdfs(
         if progress_callback:
             progress_callback(60)  # 60% after splitting
         
-        # Create the vector store
-        vector_store = SimpleVectorStore()
+        # Get the embedding model
+        embeddings = get_embeddings()
         
         # Update progress
         if progress_callback:
-            progress_callback(70)  # 70% after initializing vectorizer
+            progress_callback(70)  # 70% after initializing embeddings
         
-        # Add documents to the vector store
+        # Create and persist the vector store
         loop = asyncio.get_event_loop()
         await loop.run_in_executor(
             None,
-            lambda: vector_store.add_documents(chunks)
-        )
-        
-        # Save the vector store
-        await loop.run_in_executor(
-            None,
-            lambda: vector_store.save(vector_store_path)
+            lambda: Chroma.from_documents(
+                documents=chunks,
+                embedding=embeddings,
+                persist_directory=vector_store_path
+            )
         )
         
         # Update progress
