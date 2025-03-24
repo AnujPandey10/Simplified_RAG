@@ -15,29 +15,24 @@ import shutil
 async def get_ollama_models() -> List[str]:
     """Get a list of available models from Ollama."""
     try:
-        # Run ollama list command directly
-        process = await asyncio.create_subprocess_exec(
-            'ollama', 'list',
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
-        )
-        stdout, stderr = await process.communicate()
+        # Use the ollama client directly instead of subprocess
+        response = ollama.list()
+        print("Ollama response:", response)  # Debug print
         
-        if stderr:
-            print(f"Ollama stderr: {stderr.decode()}")
+        # Extract model names from the response
+        model_names = []
+        for model in response['models']:
+            name = model['name']
+            if ':' not in name:  # Add 'latest' tag if no tag specified
+                name += ':latest'
+            model_names.append(name)
         
-        # Parse the output to get model names
-        output = stdout.decode()
-        print("Ollama output:", output)
-        
-        # Skip the header line and process each line
-        lines = output.strip().split('\n')[1:]
-        model_names = [line.split()[0] for line in lines if line.strip()]
-        
-        print("Found models:", model_names)
+        print("Found models:", model_names)  # Debug print
         return model_names
+        
     except Exception as e:
-        print(f"Error getting Ollama models: {e}")
+        print(f"Error getting Ollama models: {str(e)}")
+        # Return empty list instead of raising an error
         return []
 
 

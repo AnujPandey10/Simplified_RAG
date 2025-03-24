@@ -57,9 +57,19 @@ async def read_root(request: Request):
 async def get_models():
     try:
         models = await get_ollama_models()
+        if not models:
+            # If no models found, return a more informative response
+            return {
+                "models": [],
+                "message": "No models found. Please ensure Ollama service is running and models are installed."
+            }
         return {"models": models}
     except Exception as e:
-        return HTTPException(status_code=500, detail=f"Failed to get models: {str(e)}")
+        print(f"Error in get_models endpoint: {str(e)}")  # Debug print
+        return HTTPException(
+            status_code=500,
+            detail=f"Failed to get models: {str(e)}. Please ensure Ollama service is running."
+        )
 
 
 @app.post("/api/chat-direct")
